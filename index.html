@@ -11,7 +11,7 @@
       body {
         margin: 0;
         padding: 0;
-        background-color: #1a0509; /* Deep wine/dark background */
+        background-color: #1a0509;
         overflow: hidden;
         font-family: 'Playfair Display', serif;
       }
@@ -20,21 +20,24 @@
         touch-action: none;
       }
     </style>
-  <script type="importmap">
+    <script type="importmap">
 {
   "imports": {
-    "react": "https://aistudiocdn.com/react@^19.2.1",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.1/",
-    "react/": "https://aistudiocdn.com/react@^19.2.1/",
-    "three": "https://aistudiocdn.com/three@^0.181.2",
-    "@react-three/fiber": "https://aistudiocdn.com/@react-three/fiber@^9.4.2",
-    "@react-three/drei": "https://aistudiocdn.com/@react-three/drei@^10.7.7",
-    "@react-three/postprocessing": "https://aistudiocdn.com/@react-three/postprocessing@^3.0.4"
+    "react": "https://esm.sh/react@19",
+    "react-dom": "https://esm.sh/react-dom@19",
+    "react-dom/": "https://esm.sh/react-dom@19/",
+    "react/": "https://esm.sh/react@19/",
+    "three": "https://esm.sh/three@0.181.2",
+    "@react-three/fiber": "https://esm.sh/@react-three/fiber@9.4.2",
+    "@react-three/drei": "https://esm.sh/@react-three/drei@10.7.7",
+    "@react-three/postprocessing": "https://esm.sh/@react-three/postprocessing@3.0.4",
+    "@mediapipe/tasks-vision": "https://esm.sh/@mediapipe/tasks-vision@0.10.0"
   }
 }
 </script>
-</head>
+  </head>
   <body>
     <div id="root"></div>
+    <script type="module" src="./dist/index.js"></script>
   </body>
 </html>
