@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { GestureRecognizer, FilesetResolver } from '@mediapipe/tasks-vision';
+import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { ParticleState } from '../types';
 
 interface HandControllerProps {
@@ -13,34 +13,29 @@ export const HandController: React.FC<HandControllerProps> = ({ onGesture, onRot
   const [error, setError] = useState<string | null>(null);
   
   useEffect(() => {
-    let gestureRecognizer: GestureRecognizer | null = null;
+    let handLandmarker: HandLandmarker | null = null;
     let animationFrameId: number;
 
     const setupMediaPipe = async () => {
       try {
+        // 检查是否支持 mediaDevices
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           setError("浏览器不支持摄像头访问");
           return;
         }
 
-        // ✅ 使用官方的 GestureRecognizer
         const vision = await FilesetResolver.forVisionTasks(
           "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
         );
         
-        gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
           baseOptions: {
-            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task`,
+            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
             delegate: "GPU"
           },
           runningMode: "VIDEO",
-          numHands: 1,
-          minGestureConfidence: 0.3,  // 手势置信度
-          minHandDetectionConfidence: 0.5,
-          minHandPresenceConfidence: 0.5,
-          minTrackingConfidence: 0.5
+          numHands: 1
         });
-        
         setLoaded(true);
         startWebcam();
       } catch (error) {
@@ -74,8 +69,8 @@ export const HandController: React.FC<HandControllerProps> = ({ onGesture, onRot
       } catch (err: any) {
         console.error("Error accessing webcam:", err);
         if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-          setError("摄像头权限被拒绝");
-        } else if (err.name === 'NotFoundError') {
+          setError("摄像头权限被拒绝，请允许访问摄像头");
+        } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
           setError("未找到摄像头设备");
         } else {
           setError("无法访问摄像头: " + (err.message || err.name));
@@ -84,161 +79,118 @@ export const HandController: React.FC<HandControllerProps> = ({ onGesture, onRot
     };
 
     let lastVideoTime = -1;
-    let lastGestureType: string | null = null;
+    let lastHandState: 'fist' | 'open' | null = null;
     let lastWristX: number | null = null;
     
-    // 状态平滑
-    const gestureHistory: string[] = [];
-    const gestureHistorySize = 5;
+    // 平滑滤波：使用滑动窗口
+    const stateHistory: ('fist' | 'open')[] = [];
+    const stateHistorySize = 5; // 需要连续5帧确认状态
     const wristXHistory: number[] = [];
-    const wristXHistorySize = 8;
+    const wristXHistorySize = 3; // 手腕位置平滑窗口
     
     const predictWebcam = () => {
-      if (videoRef.current && gestureRecognizer) {
+      if (videoRef.current && handLandmarker) {
         if (videoRef.current.currentTime !== lastVideoTime) {
           lastVideoTime = videoRef.current.currentTime;
           const startTimeMs = performance.now();
-          
-          // ✅ 使用官方的手势识别
-          const result = gestureRecognizer.recognizeForVideo(videoRef.current, startTimeMs);
-          
-          // 检查是否有手部
-          const hasHand = result.landmarks && result.landmarks.length > 0;
-          
-          if (hasHand && result.gestures && result.gestures.length > 0) {
-            const gestures = result.gestures[0]; // 第一只手的手势
+          const result = handLandmarker.detectForVideo(videoRef.current, startTimeMs);
+
+          if (result.landmarks && result.landmarks.length > 0) {
             const landmarks = result.landmarks[0];
             
-            // ✅ 1. 使用官方手势识别结果
-            let confirmedGesture: string | null = null;
+            // 1. Gesture Detection - 检测手的状态（改进算法）
+            const wrist = landmarks[0];
+            const tips = [8, 12, 16, 20]; // Index, Middle, Ring, Pinky tips
             
-            if (gestures.length > 0) {
-              const topGesture = gestures[0]; // 置信度最高的手势
-              let gestureName = topGesture.categoryName; // "Open_Palm", "Closed_Fist", "Pointing_Up" 等
-              const confidence = topGesture.score;
+            // 改进：检查每个手指的关节角度，更准确
+            let extendedFingers = 0;
+            const fingerJoints = [
+              [5, 6, 8],   // 食指
+              [9, 10, 12], // 中指
+              [13, 14, 16], // 无名指
+              [17, 18, 20]  // 小指
+            ];
+            
+            fingerJoints.forEach(([base, mid, tip]) => {
+              const basePoint = landmarks[base];
+              const midPoint = landmarks[mid];
+              const tipPoint = landmarks[tip];
               
-              // 调试：打印所有识别到的手势
-              if (gestures.length > 1) {
-                console.log('所有手势:', gestures.map(g => `${g.categoryName}(${g.score.toFixed(2)})`).join(', '));
+              // 计算手指是否伸直：指尖应该比中间关节更远离手腕
+              const midDist = Math.sqrt(
+                Math.pow(midPoint.x - wrist.x, 2) + 
+                Math.pow(midPoint.y - wrist.y, 2)
+              );
+              const tipDist = Math.sqrt(
+                Math.pow(tipPoint.x - wrist.x, 2) + 
+                Math.pow(tipPoint.y - wrist.y, 2)
+              );
+              
+              // 如果指尖比中间关节更远，说明手指伸直
+              if (tipDist > midDist * 1.1) {
+                extendedFingers++;
               }
-              
-              // 手势名称映射：处理可能的变体
-              // GestureRecognizer 可能返回不同的名称
-              if (gestureName === 'Open_Palm' || gestureName === 'Palm' || gestureName === 'Palm_Open') {
-                gestureName = 'Open_Palm';
-              } else if (gestureName === 'Closed_Fist' || gestureName === 'Fist' || gestureName === 'Fist_Closed') {
-                gestureName = 'Closed_Fist';
-              }
-              
-              console.log(`🎯 识别到手势: ${gestureName} (置信度: ${confidence.toFixed(2)})`);
-              
-              // 添加到历史记录（平滑）
-              if (confidence > 0.4) {  // 降低阈值，让识别更灵敏
-                gestureHistory.push(gestureName);
-                if (gestureHistory.length > gestureHistorySize) {
-                  gestureHistory.shift();
-                }
-              }
-              
-              // 多数投票确认手势（降低阈值，让识别更快）
-              const gestureCount = new Map<string, number>();
-              for (const g of gestureHistory) {
-                gestureCount.set(g, (gestureCount.get(g) || 0) + 1);
-              }
-              
-              let maxCount = 0;
-              // 降低确认阈值：从 0.6 降到 0.4，只需要 2 帧相同就能确认
-              for (const [gesture, count] of gestureCount.entries()) {
-                if (count > maxCount && count >= Math.max(2, gestureHistorySize * 0.4)) {
-                  confirmedGesture = gesture;
-                  maxCount = count;
-                }
-              }
-              
-              // ✅ 2. 手势触发逻辑
-              // 如果当前手势置信度很高，也可以直接触发（不需要等待历史确认）
-              const highConfidenceGesture = confidence > 0.6 ? gestureName : null; // 降低阈值到 0.6
-              const finalGesture = highConfidenceGesture || confirmedGesture;
-              
-              // 备选方案：如果 Open_Palm 识别不到，检查是否有其他"张开"的手势
-              // 比如 "Thumb_Up", "Victory" 等也可以作为张开的手势
-              const isOpenGesture = finalGesture === 'Open_Palm' || 
-                                   finalGesture === 'Thumb_Up' || 
-                                   finalGesture === 'Victory' ||
-                                   finalGesture === 'ILoveYou';
-              
-              if (finalGesture && lastGestureType !== finalGesture) {
-                console.log(`✅ 确认手势变化: ${lastGestureType} → ${finalGesture} (置信度: ${confidence.toFixed(2)})`);
-                
-                // 官方手势类型文档：
-                // - "Open_Palm": 张开手掌
-                // - "Closed_Fist": 握拳
-                // - "Pointing_Up": 食指指向
-                // - "Thumbs_Up": 竖大拇指
-                // - "Victory": V手势
-                // - "ILoveYou": 爱你手势
-                
-                if (isOpenGesture && lastGestureType === 'Closed_Fist') {
-                  onGesture(ParticleState.SCATTERED);
-                  console.log('🎄 打开圣诞树');
-                  lastGestureType = 'Open_Palm'; // 统一标记为 Open_Palm
-                } else if (finalGesture === 'Closed_Fist' && (lastGestureType === 'Open_Palm' || lastGestureType === null)) {
-                  onGesture(ParticleState.TREE_SHAPE);
-                  console.log('🎄 闭合圣诞树');
-                  lastGestureType = finalGesture;
-                } else if (finalGesture) {
-                  // 更新手势类型，但不触发动作
-                  lastGestureType = isOpenGesture ? 'Open_Palm' : finalGesture;
-                }
-              } else if (finalGesture) {
-                // 即使手势没变化，也更新 lastGestureType（用于状态保持）
-                lastGestureType = isOpenGesture ? 'Open_Palm' : finalGesture;
-              }
+            });
+
+            // 判断当前手的状态
+            const currentHandState: 'fist' | 'open' = extendedFingers <= 1 ? 'fist' : 'open';
+            
+            // 添加到历史记录
+            stateHistory.push(currentHandState);
+            if (stateHistory.length > stateHistorySize) {
+              stateHistory.shift();
             }
             
-            // ✅ 3. 旋转控制（基于手腕位置）
-            const wrist = landmarks[0];
+            // 状态确认：需要连续多帧都是同一状态才触发
+            const confirmedState = stateHistory.length >= stateHistorySize && 
+              stateHistory.every(s => s === currentHandState) ? currentHandState : null;
             
-            // 只在张开手掌时允许旋转
-            const canRotate = confirmedGesture === 'Open_Palm' || 
-                              (gestureHistory.length > 0 && 
-                               gestureHistory.slice(-2).includes('Open_Palm'));
-            
-            if (canRotate) {
-              const currentWristX = 1.0 - wrist.x; // 反转坐标
+            // 2. 只在确认状态变化时触发
+            if (confirmedState && lastHandState !== confirmedState) {
+              if (confirmedState === 'open' && lastHandState === 'fist') {
+                // 从握拳变为张开 → 散开
+                onGesture(ParticleState.SCATTERED);
+              } else if (confirmedState === 'fist' && lastHandState === 'open') {
+                // 从张开变为握拳 → 闭合
+                onGesture(ParticleState.TREE_SHAPE);
+              }
+              lastHandState = confirmedState;
+            }
+
+            // 3. Rotation - 检测手部左右移动的速度（平滑处理）
+            if (confirmedState === 'open') {
+              const currentWristX = wrist.x; // 当前手腕 x 位置（0-1）
               
+              // 添加到平滑窗口
               wristXHistory.push(currentWristX);
               if (wristXHistory.length > wristXHistorySize) {
                 wristXHistory.shift();
               }
               
-              // 卡尔曼滤波平滑（比移动平均更好）
-              const smoothedX = kalmanFilter(wristXHistory);
+              // 计算平滑后的位置（移动平均）
+              const smoothedX = wristXHistory.reduce((a, b) => a + b, 0) / wristXHistory.length;
               
               if (lastWristX !== null) {
-                const rawDeltaX = smoothedX - lastWristX;
-                const deadZone = 0.003;
-                
-                if (Math.abs(rawDeltaX) < deadZone) {
-                  onRotation(0);
-                } else {
-                  // 使用非线性映射，低速时灵敏，高速时平缓
-                  const rotation = Math.sign(rawDeltaX) * 
-                                   Math.pow(Math.abs(rawDeltaX) * 60, 0.8);
-                  const clampedRotation = Math.max(-3, Math.min(3, rotation));
-                  onRotation(clampedRotation);
-                }
+                // 计算移动速度（使用平滑后的位置）
+                const deltaX = (smoothedX - lastWristX) * 50;
+                // 限制最大速度
+                const rotation = Math.max(-6, Math.min(6, deltaX));
+                onRotation(rotation);
+              } else {
+                onRotation(0);
               }
               
               lastWristX = smoothedX;
             } else {
+              // 握拳时重置位置跟踪
               lastWristX = null;
               wristXHistory.length = 0;
               onRotation(0);
             }
           } else {
-            // 没有检测到手
-            gestureHistory.length = 0;
+            // 没有检测到手，重置状态
+            lastHandState = null;
+            stateHistory.length = 0;
             wristXHistory.length = 0;
             onRotation(0);
           }
@@ -251,11 +203,11 @@ export const HandController: React.FC<HandControllerProps> = ({ onGesture, onRot
 
     return () => {
       if (videoRef.current && videoRef.current.srcObject) {
-        const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-        tracks.forEach(track => track.stop());
+         const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+         tracks.forEach(track => track.stop());
       }
       cancelAnimationFrame(animationFrameId);
-      if (gestureRecognizer) gestureRecognizer.close();
+      if (handLandmarker) handLandmarker.close();
     };
   }, [onGesture, onRotation]);
 
@@ -265,45 +217,24 @@ export const HandController: React.FC<HandControllerProps> = ({ onGesture, onRot
         relative w-32 h-24 bg-black/50 rounded-lg overflow-hidden border border-pink-500/30
         transition-opacity duration-1000 ${loaded && !error ? 'opacity-100' : 'opacity-50'}
       `}>
-        <video 
-          ref={videoRef}
-          className="w-full h-full object-cover transform -scale-x-100"
-          autoPlay
-          playsInline
-          muted
-        />
-        <div className="absolute top-1 left-2 text-[8px] text-pink-200 uppercase tracking-widest bg-black/40 px-1 rounded">
-          Gesture Control
-        </div>
-        {error && (
-          <div className="absolute inset-0 bg-black/80 flex items-center justify-center p-1">
-            <div className="text-[6px] text-red-300 text-center leading-tight">
-              {error}
-            </div>
-          </div>
-        )}
+         <video 
+           ref={videoRef}
+           className="w-full h-full object-cover transform -scale-x-100"
+           autoPlay
+           playsInline
+           muted
+         />
+         <div className="absolute top-1 left-2 text-[8px] text-pink-200 uppercase tracking-widest bg-black/40 px-1 rounded">
+            Gesture Control
+         </div>
+         {error && (
+           <div className="absolute inset-0 bg-black/80 flex items-center justify-center p-1">
+             <div className="text-[6px] text-red-300 text-center leading-tight">
+               {error}
+             </div>
+           </div>
+         )}
       </div>
     </div>
   );
 };
-
-// 卡尔曼滤波函数
-function kalmanFilter(values: number[], processNoise = 0.01, measurementNoise = 0.1): number {
-  if (values.length === 0) return 0;
-  
-  let estimate = values[0];
-  let error = 1;
-  
-  for (let i = 1; i < values.length; i++) {
-    // 预测
-    let priorEstimate = estimate;
-    let priorError = error + processNoise;
-    
-    // 更新
-    let kalmanGain = priorError / (priorError + measurementNoise);
-    estimate = priorEstimate + kalmanGain * (values[i] - priorEstimate);
-    error = (1 - kalmanGain) * priorError;
-  }
-  
-  return estimate;
-}
