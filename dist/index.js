@@ -384,14 +384,17 @@ import { useFrame as useFrame2, useThree } from "@react-three/fiber";
 import { jsx as jsx2 } from "react/jsx-runtime";
 function generatePhotoPositions(count, radius) {
   const positions = [];
-  const seed = 12345;
+  const SPIRAL_HEIGHT = 18;
+  const SPIRAL_REVS = 2.5;
+  const MAX_RADIUS = radius;
+  const MIN_RADIUS = radius * 0.3;
   for (let i = 0; i < count; i++) {
-    let rng = (seed + i * 7919) % 2147483647;
-    const heightRng = rng / 2147483647;
-    const angle = i / count * Math.PI * 2;
-    const x = radius * Math.cos(angle);
-    const z = radius * Math.sin(angle);
-    const y = (heightRng - 0.5) * 6;
+    const t = i / (count - 1);
+    const y = SPIRAL_HEIGHT / 2 - t * SPIRAL_HEIGHT;
+    const r = MAX_RADIUS * (1 - t) + MIN_RADIUS * t;
+    const angle = t * Math.PI * 2 * SPIRAL_REVS;
+    const x = Math.cos(angle) * r;
+    const z = Math.sin(angle) * r;
     positions.push({
       position: [x, y, z],
       rotation: [0, 0, 0]
@@ -404,6 +407,7 @@ var PhotoPlanes = ({ state, photoPaths }) => {
   const MAX_PHOTOS = Math.min(photoPaths.length, 8);
   const photoCount = MAX_PHOTOS;
   const radius = 10;
+  const [selectedPhotoIndex, setSelectedPhotoIndex] = useState(null);
   const positions = useMemo2(() => {
     return generatePhotoPositions(photoCount, radius);
   }, [photoCount]);
@@ -476,12 +480,49 @@ var PhotoPlanes = ({ state, photoPaths }) => {
       console.error("\u90E8\u5206\u7167\u7247\u52A0\u8F7D\u5931\u8D25:", err);
     });
   }, [photoPaths, photoCount]);
+  const { camera, gl, raycaster, pointer } = useThree();
+  const meshesRef = useRef2(/* @__PURE__ */ new Map());
+  useEffect(() => {
+    const handleClick = (event) => {
+      if (state !== "SCATTERED" /* SCATTERED */) return;
+      const rect = gl.domElement.getBoundingClientRect();
+      pointer.x = (event.clientX - rect.left) / rect.width * 2 - 1;
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const allMeshes = Array.from(meshesRef.current.keys());
+      const intersects = raycaster.intersectObjects(allMeshes, true);
+      if (intersects.length > 0) {
+        const clickedMesh = intersects[0].object;
+        const photoIndex = meshesRef.current.get(clickedMesh);
+        if (photoIndex !== void 0) {
+          if (selectedPhotoIndex === photoIndex) {
+            setSelectedPhotoIndex(null);
+          } else {
+            setSelectedPhotoIndex(photoIndex);
+          }
+        }
+      } else {
+        setSelectedPhotoIndex(null);
+      }
+    };
+    gl.domElement.addEventListener("click", handleClick);
+    return () => {
+      gl.domElement.removeEventListener("click", handleClick);
+    };
+  }, [state, selectedPhotoIndex, camera, gl, raycaster, pointer]);
+  useEffect(() => {
+    if (state !== "SCATTERED" /* SCATTERED */) {
+      setSelectedPhotoIndex(null);
+    }
+  }, [state]);
   useFrame2((_, delta) => {
     if (!groupRef.current) return;
     const isScattered = state === "SCATTERED" /* SCATTERED */;
     groupRef.current.visible = isScattered;
     if (isScattered && groupRef.current.visible) {
-      groupRef.current.rotation.y += delta * 0.1;
+      if (selectedPhotoIndex === null) {
+        groupRef.current.rotation.y += delta * 0.1;
+      }
     } else {
     }
   });
@@ -501,19 +542,45 @@ var PhotoPlanes = ({ state, photoPaths }) => {
         position: posData.position,
         rotation: posData.rotation,
         texture,
-        isVisible: state === "SCATTERED" /* SCATTERED */
+        isVisible: state === "SCATTERED" /* SCATTERED */,
+        isSelected: selectedPhotoIndex === index,
+        onMeshRef: (mesh) => {
+          if (mesh) {
+            meshesRef.current.set(mesh, index);
+          } else {
+            for (const [m, idx] of meshesRef.current.entries()) {
+              if (idx === index) {
+                meshesRef.current.delete(m);
+                break;
+              }
+            }
+          }
+        }
       },
       index
     );
   }) });
 };
-var PhotoPlane = ({ index, position, rotation, texture, isVisible }) => {
+var PhotoPlane = ({ index, position, rotation, texture, isVisible, isSelected, onMeshRef }) => {
   const meshRef = useRef2(null);
   const { camera } = useThree();
   const lastCameraPositionRef = useRef2(new THREE3.Vector3());
   const updateThreshold = 0.1;
   const animationProgressRef = useRef2(0);
   const targetAnimationRef = useRef2(0);
+  const selectedProgressRef = useRef2(0);
+  const targetSelectedRef = useRef2(0);
+  const originalPositionRef = useRef2(new THREE3.Vector3(...position));
+  const targetPositionRef = useRef2(new THREE3.Vector3());
+  const currentPositionRef = useRef2(new THREE3.Vector3(...position));
+  useEffect(() => {
+    if (meshRef.current) {
+      onMeshRef(meshRef.current);
+    }
+    return () => {
+      onMeshRef(null);
+    };
+  }, [onMeshRef]);
   React2.useEffect(() => {
     if (meshRef.current) {
       meshRef.current.rotation.set(rotation[0], rotation[1], rotation[2]);
@@ -529,27 +596,52 @@ var PhotoPlane = ({ index, position, rotation, texture, isVisible }) => {
     } else {
       targetAnimationRef.current = 0;
       animationProgressRef.current = 0;
+      targetSelectedRef.current = 0;
+      selectedProgressRef.current = 0;
     }
   }, [isVisible, index]);
+  React2.useEffect(() => {
+    if (isSelected) {
+      targetSelectedRef.current = 1;
+      const localDistance = 5;
+      targetPositionRef.current.set(0, 0.5, -localDistance);
+    } else {
+      targetSelectedRef.current = 0;
+      targetPositionRef.current.copy(originalPositionRef.current);
+    }
+  }, [isSelected]);
   useFrame2((_, delta) => {
     if (meshRef.current) {
       const cameraPos = camera.position;
       const distance = cameraPos.distanceTo(lastCameraPositionRef.current);
-      if (distance > updateThreshold) {
+      if (isSelected || distance > updateThreshold) {
         meshRef.current.lookAt(cameraPos);
         lastCameraPositionRef.current.copy(cameraPos);
       }
+      selectedProgressRef.current = THREE3.MathUtils.lerp(
+        selectedProgressRef.current,
+        targetSelectedRef.current,
+        delta * 3
+        // 选中动画速度较快
+      );
+      meshRef.current.renderOrder = isSelected ? 100 : 0;
+      currentPositionRef.current.lerp(targetPositionRef.current, delta * 3);
+      meshRef.current.position.copy(currentPositionRef.current);
       animationProgressRef.current = THREE3.MathUtils.lerp(
         animationProgressRef.current,
         targetAnimationRef.current,
         delta * 0.5
         // 动画速度
       );
-      const scale = THREE3.MathUtils.lerp(0.3, 1, animationProgressRef.current);
-      meshRef.current.scale.set(scale, scale, scale);
+      const baseScale = THREE3.MathUtils.lerp(0.3, 1, animationProgressRef.current);
+      const selectedScale = THREE3.MathUtils.lerp(1, 2.5, selectedProgressRef.current);
+      const finalScale = baseScale * selectedScale;
+      meshRef.current.scale.set(finalScale, finalScale, finalScale);
       const material2 = meshRef.current.material;
       if (material2) {
-        material2.opacity = animationProgressRef.current;
+        const baseOpacity = animationProgressRef.current;
+        const dimmedOpacity = !isSelected && selectedProgressRef.current > 0.1 ? 0.3 : 1;
+        material2.opacity = baseOpacity * dimmedOpacity;
       }
     }
   });
@@ -673,7 +765,7 @@ var UI = ({ currentState, onToggle }) => {
   const isTree = currentState === "TREE_SHAPE" /* TREE_SHAPE */;
   return /* @__PURE__ */ jsxs3("div", { className: "absolute inset-0 pointer-events-none flex flex-col justify-between items-center py-12 px-6", children: [
     /* @__PURE__ */ jsxs3("header", { className: "text-center space-y-3 pointer-events-auto mt-4", children: [
-      /* @__PURE__ */ jsx4("h1", { className: "text-xl md:text-3xl font-bold text-pink-300 drop-shadow-[0_0_10px_rgba(255,192,203,0.5)] font-serif tracking-widest", children: "CHRISTMAS MEMORIES" }),
+      /* @__PURE__ */ jsx4("h1", { className: "text-xl md:text-3xl font-bold text-pink-300 drop-shadow-[0_0_10px_rgba(255,192,203,0.5)] font-serif tracking-widest", children: "MERRY CHRISTMAS" }),
       /* @__PURE__ */ jsx4("p", { className: "text-pink-200/60 text-[10px] md:text-xs font-sans tracking-[0.3em] uppercase", children: "Only for Lin Xi" })
     ] }),
     /* @__PURE__ */ jsx4("div", { className: "pointer-events-auto mb-10", children: /* @__PURE__ */ jsxs3(
@@ -713,14 +805,14 @@ var UI = ({ currentState, onToggle }) => {
 
 // components/HandController.tsx
 import { useEffect as useEffect2, useRef as useRef4, useState as useState2 } from "react";
-import { GestureRecognizer, FilesetResolver } from "@mediapipe/tasks-vision";
+import { HandLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 import { jsx as jsx5, jsxs as jsxs4 } from "react/jsx-runtime";
 var HandController = ({ onGesture, onRotation }) => {
   const videoRef = useRef4(null);
   const [loaded, setLoaded] = useState2(false);
   const [error, setError] = useState2(null);
   useEffect2(() => {
-    let gestureRecognizer = null;
+    let handLandmarker = null;
     let animationFrameId;
     const setupMediaPipe = async () => {
       try {
@@ -731,18 +823,13 @@ var HandController = ({ onGesture, onRotation }) => {
         const vision = await FilesetResolver.forVisionTasks(
           "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
         );
-        gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
           baseOptions: {
-            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task`,
+            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
             delegate: "GPU"
           },
           runningMode: "VIDEO",
-          numHands: 1,
-          minGestureConfidence: 0.3,
-          // 手势置信度
-          minHandDetectionConfidence: 0.5,
-          minHandPresenceConfidence: 0.5,
-          minTrackingConfidence: 0.5
+          numHands: 1
         });
         setLoaded(true);
         startWebcam();
@@ -774,8 +861,8 @@ var HandController = ({ onGesture, onRotation }) => {
       } catch (err) {
         console.error("Error accessing webcam:", err);
         if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-          setError("\u6444\u50CF\u5934\u6743\u9650\u88AB\u62D2\u7EDD");
-        } else if (err.name === "NotFoundError") {
+          setError("\u6444\u50CF\u5934\u6743\u9650\u88AB\u62D2\u7EDD\uFF0C\u8BF7\u5141\u8BB8\u8BBF\u95EE\u6444\u50CF\u5934");
+        } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
           setError("\u672A\u627E\u5230\u6444\u50CF\u5934\u8BBE\u5907");
         } else {
           setError("\u65E0\u6CD5\u8BBF\u95EE\u6444\u50CF\u5934: " + (err.message || err.name));
@@ -783,76 +870,74 @@ var HandController = ({ onGesture, onRotation }) => {
       }
     };
     let lastVideoTime = -1;
-    let lastGestureType = null;
+    let lastHandState = null;
     let lastWristX = null;
-    const gestureHistory = [];
-    const gestureHistorySize = 5;
+    const stateHistory = [];
+    const stateHistorySize = 5;
     const wristXHistory = [];
-    const wristXHistorySize = 8;
+    const wristXHistorySize = 3;
     const predictWebcam = () => {
-      if (videoRef.current && gestureRecognizer) {
+      if (videoRef.current && handLandmarker) {
         if (videoRef.current.currentTime !== lastVideoTime) {
           lastVideoTime = videoRef.current.currentTime;
           const startTimeMs = performance.now();
-          const result = gestureRecognizer.recognizeForVideo(videoRef.current, startTimeMs);
-          const hasHand = result.landmarks && result.landmarks.length > 0;
-          if (hasHand && result.gestures && result.gestures.length > 0) {
-            const gestures = result.gestures[0];
+          const result = handLandmarker.detectForVideo(videoRef.current, startTimeMs);
+          if (result.landmarks && result.landmarks.length > 0) {
             const landmarks = result.landmarks[0];
-            let confirmedGesture = null;
-            if (gestures.length > 0) {
-              const topGesture = gestures[0];
-              const gestureName = topGesture.categoryName;
-              const confidence = topGesture.score;
-              console.log(`\u{1F3AF} \u8BC6\u522B\u5230\u624B\u52BF: ${gestureName} (\u7F6E\u4FE1\u5EA6: ${confidence.toFixed(2)})`);
-              if (confidence > 0.5) {
-                gestureHistory.push(gestureName);
-                if (gestureHistory.length > gestureHistorySize) {
-                  gestureHistory.shift();
-                }
-              }
-              const gestureCount = /* @__PURE__ */ new Map();
-              for (const g of gestureHistory) {
-                gestureCount.set(g, (gestureCount.get(g) || 0) + 1);
-              }
-              let maxCount = 0;
-              for (const [gesture, count] of gestureCount.entries()) {
-                if (count > maxCount && count >= gestureHistorySize * 0.6) {
-                  confirmedGesture = gesture;
-                  maxCount = count;
-                }
-              }
-              if (confirmedGesture && lastGestureType !== confirmedGesture) {
-                console.log(`\u2705 \u786E\u8BA4\u624B\u52BF\u53D8\u5316: ${lastGestureType} \u2192 ${confirmedGesture}`);
-                if (confirmedGesture === "Open_Palm" && lastGestureType === "Closed_Fist") {
-                  onGesture("SCATTERED" /* SCATTERED */);
-                  console.log("\u{1F384} \u6253\u5F00\u5723\u8BDE\u6811");
-                } else if (confirmedGesture === "Closed_Fist" && lastGestureType === "Open_Palm") {
-                  onGesture("TREE_SHAPE" /* TREE_SHAPE */);
-                  console.log("\u{1F384} \u95ED\u5408\u5723\u8BDE\u6811");
-                }
-                lastGestureType = confirmedGesture;
-              }
-            }
             const wrist = landmarks[0];
-            const canRotate = confirmedGesture === "Open_Palm" || gestureHistory.length > 0 && gestureHistory.slice(-2).includes("Open_Palm");
-            if (canRotate) {
-              const currentWristX = 1 - wrist.x;
+            const tips = [8, 12, 16, 20];
+            let extendedFingers = 0;
+            const fingerJoints = [
+              [5, 6, 8],
+              // 食指
+              [9, 10, 12],
+              // 中指
+              [13, 14, 16],
+              // 无名指
+              [17, 18, 20]
+              // 小指
+            ];
+            fingerJoints.forEach(([base, mid, tip]) => {
+              const basePoint = landmarks[base];
+              const midPoint = landmarks[mid];
+              const tipPoint = landmarks[tip];
+              const midDist = Math.sqrt(
+                Math.pow(midPoint.x - wrist.x, 2) + Math.pow(midPoint.y - wrist.y, 2)
+              );
+              const tipDist = Math.sqrt(
+                Math.pow(tipPoint.x - wrist.x, 2) + Math.pow(tipPoint.y - wrist.y, 2)
+              );
+              if (tipDist > midDist * 1.1) {
+                extendedFingers++;
+              }
+            });
+            const currentHandState = extendedFingers <= 1 ? "fist" : "open";
+            stateHistory.push(currentHandState);
+            if (stateHistory.length > stateHistorySize) {
+              stateHistory.shift();
+            }
+            const confirmedState = stateHistory.length >= stateHistorySize && stateHistory.every((s) => s === currentHandState) ? currentHandState : null;
+            if (confirmedState && lastHandState !== confirmedState) {
+              if (confirmedState === "open" && lastHandState === "fist") {
+                onGesture("SCATTERED" /* SCATTERED */);
+              } else if (confirmedState === "fist" && lastHandState === "open") {
+                onGesture("TREE_SHAPE" /* TREE_SHAPE */);
+              }
+              lastHandState = confirmedState;
+            }
+            if (confirmedState === "open") {
+              const currentWristX = wrist.x;
               wristXHistory.push(currentWristX);
               if (wristXHistory.length > wristXHistorySize) {
                 wristXHistory.shift();
               }
-              const smoothedX = kalmanFilter(wristXHistory);
+              const smoothedX = wristXHistory.reduce((a, b) => a + b, 0) / wristXHistory.length;
               if (lastWristX !== null) {
-                const rawDeltaX = smoothedX - lastWristX;
-                const deadZone = 3e-3;
-                if (Math.abs(rawDeltaX) < deadZone) {
-                  onRotation(0);
-                } else {
-                  const rotation = Math.sign(rawDeltaX) * Math.pow(Math.abs(rawDeltaX) * 60, 0.8);
-                  const clampedRotation = Math.max(-3, Math.min(3, rotation));
-                  onRotation(clampedRotation);
-                }
+                const deltaX = (smoothedX - lastWristX) * 50;
+                const rotation = Math.max(-6, Math.min(6, deltaX));
+                onRotation(rotation);
+              } else {
+                onRotation(0);
               }
               lastWristX = smoothedX;
             } else {
@@ -861,7 +946,8 @@ var HandController = ({ onGesture, onRotation }) => {
               onRotation(0);
             }
           } else {
-            gestureHistory.length = 0;
+            lastHandState = null;
+            stateHistory.length = 0;
             wristXHistory.length = 0;
             onRotation(0);
           }
@@ -876,7 +962,7 @@ var HandController = ({ onGesture, onRotation }) => {
         tracks.forEach((track) => track.stop());
       }
       cancelAnimationFrame(animationFrameId);
-      if (gestureRecognizer) gestureRecognizer.close();
+      if (handLandmarker) handLandmarker.close();
     };
   }, [onGesture, onRotation]);
   return /* @__PURE__ */ jsx5("div", { className: "absolute bottom-4 right-4 z-50 pointer-events-auto", children: /* @__PURE__ */ jsxs4("div", { className: `
@@ -897,19 +983,6 @@ var HandController = ({ onGesture, onRotation }) => {
     error && /* @__PURE__ */ jsx5("div", { className: "absolute inset-0 bg-black/80 flex items-center justify-center p-1", children: /* @__PURE__ */ jsx5("div", { className: "text-[6px] text-red-300 text-center leading-tight", children: error }) })
   ] }) });
 };
-function kalmanFilter(values, processNoise = 0.01, measurementNoise = 0.1) {
-  if (values.length === 0) return 0;
-  let estimate = values[0];
-  let error = 1;
-  for (let i = 1; i < values.length; i++) {
-    let priorEstimate = estimate;
-    let priorError = error + processNoise;
-    let kalmanGain = priorError / (priorError + measurementNoise);
-    estimate = priorEstimate + kalmanGain * (values[i] - priorEstimate);
-    error = (1 - kalmanGain) * priorError;
-  }
-  return estimate;
-}
 
 // App.tsx
 import { jsx as jsx6, jsxs as jsxs5 } from "react/jsx-runtime";

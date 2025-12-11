@@ -8,26 +8,32 @@ interface PhotoPlanesProps {
   photoPaths: string[];
 }
 
-// 生成固定的位置：沿圆周分布，有高低起伏
+// 生成固定的位置：像灯带一样从顶部螺旋向下排列
 function generatePhotoPositions(count: number, radius: number): Array<{ position: [number, number, number], rotation: [number, number, number] }> {
   const positions: Array<{ position: [number, number, number], rotation: [number, number, number] }> = [];
-  // 使用固定种子确保位置不变
-  const seed = 12345;
+  
+  // 参考灯带的参数
+  const SPIRAL_HEIGHT = 18; // 螺旋总高度（考虑 group 的 0.5 缩放，实际是 9）
+  const SPIRAL_REVS = 2.5; // 螺旋圈数（照片少，圈数也少一点）
+  const MAX_RADIUS = radius; // 顶部最大半径
+  const MIN_RADIUS = radius * 0.3; // 底部最小半径
   
   for (let i = 0; i < count; i++) {
-    // 简单的伪随机数生成器（固定种子）
-    let rng = (seed + i * 7919) % 2147483647;
-    const heightRng = (rng / 2147483647);
+    // 归一化进度：0（顶部）到 1（底部）
+    const t = i / (count - 1);
     
-    // 沿圆周均匀分布
-    const angle = (i / count) * Math.PI * 2;
+    // 高度：从顶部到底部
+    const y = SPIRAL_HEIGHT / 2 - (t * SPIRAL_HEIGHT);
     
-    // 圆周位置（XZ平面）
-    const x = radius * Math.cos(angle);
-    const z = radius * Math.sin(angle);
+    // 半径：从顶部到底部逐渐减小
+    const r = MAX_RADIUS * (1 - t) + MIN_RADIUS * t;
     
-    // 高度起伏（Y轴变化），范围 -3 到 3
-    const y = (heightRng - 0.5) * 6;
+    // 角度：沿着螺旋路径旋转
+    const angle = t * Math.PI * 2 * SPIRAL_REVS;
+    
+    // 计算 XZ 平面位置
+    const x = Math.cos(angle) * r;
+    const z = Math.sin(angle) * r;
     
     // 不需要旋转，保持面向相机
     positions.push({
@@ -46,6 +52,9 @@ export const PhotoPlanes: React.FC<PhotoPlanesProps> = ({ state, photoPaths }) =
   const MAX_PHOTOS = Math.min(photoPaths.length, 8); // 最多显示8张照片（从20减少到8以提升性能）
   const photoCount = MAX_PHOTOS;
   const radius = 10; // 圆周半径，间隔会更大
+  
+  // 选中的照片索引（null 表示没有选中）
+  const [selectedPhotoIndex, setSelectedPhotoIndex] = useState<number | null>(null);
   
   // 生成固定的照片位置
   const positions = useMemo(() => {
@@ -149,6 +158,59 @@ export const PhotoPlanes: React.FC<PhotoPlanesProps> = ({ state, photoPaths }) =
     });
   }, [photoPaths, photoCount]);
   
+  // 点击检测：使用 Raycaster
+  const { camera, gl, raycaster, pointer } = useThree();
+  const meshesRef = useRef<Map<THREE.Mesh, number>>(new Map());
+  
+  // 处理点击事件
+  useEffect(() => {
+    const handleClick = (event: MouseEvent) => {
+      if (state !== ParticleState.SCATTERED) return;
+      
+      // 更新鼠标位置（归一化到 -1 到 1）
+      const rect = gl.domElement.getBoundingClientRect();
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      
+      // 更新 raycaster
+      raycaster.setFromCamera(pointer, camera);
+      
+      // 检测与照片的交集（使用所有 mesh）
+      const allMeshes = Array.from(meshesRef.current.keys());
+      const intersects = raycaster.intersectObjects(allMeshes, true);
+      
+      if (intersects.length > 0) {
+        const clickedMesh = intersects[0].object as THREE.Mesh;
+        const photoIndex = meshesRef.current.get(clickedMesh);
+        
+        if (photoIndex !== undefined) {
+          // 如果点击的是已选中的照片，则取消选中
+          if (selectedPhotoIndex === photoIndex) {
+            setSelectedPhotoIndex(null);
+          } else {
+            // 否则选中这张照片
+            setSelectedPhotoIndex(photoIndex);
+          }
+        }
+      } else {
+        // 点击空白处，取消选中
+        setSelectedPhotoIndex(null);
+      }
+    };
+    
+    gl.domElement.addEventListener('click', handleClick);
+    return () => {
+      gl.domElement.removeEventListener('click', handleClick);
+    };
+  }, [state, selectedPhotoIndex, camera, gl, raycaster, pointer]);
+  
+  // 当状态改变时，重置选中状态
+  useEffect(() => {
+    if (state !== ParticleState.SCATTERED) {
+      setSelectedPhotoIndex(null);
+    }
+  }, [state]);
+  
   useFrame((_, delta) => {
     if (!groupRef.current) return;
     
@@ -157,8 +219,11 @@ export const PhotoPlanes: React.FC<PhotoPlanesProps> = ({ state, photoPaths }) =
     groupRef.current.visible = isScattered;
     
     if (isScattered && groupRef.current.visible) {
-      // 缓慢旋转照片组
-      groupRef.current.rotation.y += delta * 0.1;
+      // 如果有选中的照片，停止旋转
+      if (selectedPhotoIndex === null) {
+        // 缓慢旋转照片组
+        groupRef.current.rotation.y += delta * 0.1;
+      }
     } else {
       // 当状态改变时，重置所有照片的动画状态
       // 这样下次显示时会重新播放动画
@@ -187,6 +252,20 @@ export const PhotoPlanes: React.FC<PhotoPlanesProps> = ({ state, photoPaths }) =
             rotation={posData.rotation}
             texture={texture}
             isVisible={state === ParticleState.SCATTERED}
+            isSelected={selectedPhotoIndex === index}
+            onMeshRef={(mesh) => {
+              if (mesh) {
+                meshesRef.current.set(mesh, index);
+              } else {
+                // 需要找到并删除对应的 mesh
+                for (const [m, idx] of meshesRef.current.entries()) {
+                  if (idx === index) {
+                    meshesRef.current.delete(m);
+                    break;
+                  }
+                }
+              }
+            }}
           />
         );
       })}
@@ -200,9 +279,11 @@ interface PhotoPlaneProps {
   rotation: [number, number, number];
   texture: THREE.Texture;
   isVisible: boolean;
+  isSelected: boolean;
+  onMeshRef: (mesh: THREE.Mesh | null) => void;
 }
 
-const PhotoPlane: React.FC<PhotoPlaneProps> = ({ index, position, rotation, texture, isVisible }) => {
+const PhotoPlane: React.FC<PhotoPlaneProps> = ({ index, position, rotation, texture, isVisible, isSelected, onMeshRef }) => {
   const meshRef = useRef<THREE.Mesh>(null);
   const { camera } = useThree();
   const lastCameraPositionRef = useRef<THREE.Vector3>(new THREE.Vector3());
@@ -211,6 +292,25 @@ const PhotoPlane: React.FC<PhotoPlaneProps> = ({ index, position, rotation, text
   // 动画状态
   const animationProgressRef = useRef(0); // 0 = 初始状态（小且透明），1 = 完全显示
   const targetAnimationRef = useRef(0); // 目标动画状态
+  
+  // 选中状态的动画
+  const selectedProgressRef = useRef(0); // 0 = 未选中，1 = 完全选中
+  const targetSelectedRef = useRef(0);
+  
+  // 原始位置和目标位置
+  const originalPositionRef = useRef(new THREE.Vector3(...position));
+  const targetPositionRef = useRef(new THREE.Vector3());
+  const currentPositionRef = useRef(new THREE.Vector3(...position));
+  
+  // 注册 mesh 引用
+  useEffect(() => {
+    if (meshRef.current) {
+      onMeshRef(meshRef.current);
+    }
+    return () => {
+      onMeshRef(null);
+    };
+  }, [onMeshRef]);
   
   // 设置初始旋转
   React.useEffect(() => {
@@ -223,7 +323,7 @@ const PhotoPlane: React.FC<PhotoPlaneProps> = ({ index, position, rotation, text
   React.useEffect(() => {
     if (isVisible) {
       // 每张照片错开出现，延迟时间根据索引递增
-      const delay = index * 200; // 每张照片延迟80ms
+      const delay = index * 200; // 每张照片延迟200ms
       const timer = setTimeout(() => {
         targetAnimationRef.current = 1;
       }, delay);
@@ -232,8 +332,27 @@ const PhotoPlane: React.FC<PhotoPlaneProps> = ({ index, position, rotation, text
       // 隐藏时重置动画状态
       targetAnimationRef.current = 0;
       animationProgressRef.current = 0;
+      targetSelectedRef.current = 0;
+      selectedProgressRef.current = 0;
     }
   }, [isVisible, index]);
+  
+  // 当选中状态改变时，更新目标位置
+  React.useEffect(() => {
+    if (isSelected) {
+      targetSelectedRef.current = 1;
+      // 计算目标位置：在 group 的本地坐标系中，将照片移到中心前面
+      // group 的缩放是 0.5，所以需要相应调整
+      // 目标位置：在 group 中心前面，稍微偏上
+      // 由于 group 在 [0, 0.5, 0]，缩放 0.5，所以照片的本地坐标需要相应调整
+      const localDistance = 5.0; // 在 group 本地坐标系中的距离
+      targetPositionRef.current.set(0, 0.5, -localDistance); // 在 group 中心前面
+    } else {
+      targetSelectedRef.current = 0;
+      // 恢复原始位置
+      targetPositionRef.current.copy(originalPositionRef.current);
+    }
+  }, [isSelected]);
   
   // 优化：只在相机位置显著变化时更新朝向，减少每帧计算
   // 同时处理动画
@@ -242,11 +361,25 @@ const PhotoPlane: React.FC<PhotoPlaneProps> = ({ index, position, rotation, text
       const cameraPos = camera.position;
       const distance = cameraPos.distanceTo(lastCameraPositionRef.current);
       
-      // 只在相机移动足够远时才更新朝向
-      if (distance > updateThreshold) {
+      // 选中状态下，始终面向相机
+      if (isSelected || distance > updateThreshold) {
         meshRef.current.lookAt(cameraPos);
         lastCameraPositionRef.current.copy(cameraPos);
       }
+      
+      // 选中状态动画过渡
+      selectedProgressRef.current = THREE.MathUtils.lerp(
+        selectedProgressRef.current,
+        targetSelectedRef.current,
+        delta * 3.0 // 选中动画速度较快
+      );
+      
+      // 设置渲染顺序：选中的照片显示在最前面
+      meshRef.current.renderOrder = isSelected ? 100 : 0;
+      
+      // 位置过渡：从未选中位置到选中位置
+      currentPositionRef.current.lerp(targetPositionRef.current, delta * 3.0);
+      meshRef.current.position.copy(currentPositionRef.current);
       
       // 动画过渡：平滑淡入和缩放
       animationProgressRef.current = THREE.MathUtils.lerp(
@@ -255,14 +388,25 @@ const PhotoPlane: React.FC<PhotoPlaneProps> = ({ index, position, rotation, text
         delta * 0.5 // 动画速度
       );
       
-      // 应用缩放动画：从0.3倍缩放到1倍
-      const scale = THREE.MathUtils.lerp(0.3, 1.0, animationProgressRef.current);
-      meshRef.current.scale.set(scale, scale, scale);
+      // 基础缩放：从0.3倍缩放到1倍
+      const baseScale = THREE.MathUtils.lerp(0.3, 1.0, animationProgressRef.current);
       
-      // 应用透明度动画：从0到1
+      // 选中时的额外缩放：从1倍到2.5倍
+      const selectedScale = THREE.MathUtils.lerp(1.0, 2.5, selectedProgressRef.current);
+      
+      // 最终缩放 = 基础缩放 * 选中缩放
+      const finalScale = baseScale * selectedScale;
+      meshRef.current.scale.set(finalScale, finalScale, finalScale);
+      
+      // 透明度动画
       const material = meshRef.current.material as THREE.MeshBasicMaterial;
       if (material) {
-        material.opacity = animationProgressRef.current;
+        // 基础透明度：从0到1
+        const baseOpacity = animationProgressRef.current;
+        // 如果未选中，且当前有选中状态（selectedProgressRef > 0），则降低透明度
+        // 这样可以突出显示选中的照片
+        const dimmedOpacity = (!isSelected && selectedProgressRef.current > 0.1) ? 0.3 : 1.0;
+        material.opacity = baseOpacity * dimmedOpacity;
       }
     }
   });

@@ -15,7 +15,7 @@ export const UI: React.FC<UIProps> = ({ currentState, onToggle }) => {
       {/* Header */}
       <header className="text-center space-y-3 pointer-events-auto mt-4">
         <h1 className="text-xl md:text-3xl font-bold text-pink-300 drop-shadow-[0_0_10px_rgba(255,192,203,0.5)] font-serif tracking-widest">
-          Merry Christmas
+          MERRY CHRISTMAS
         </h1>
         <p className="text-pink-200/60 text-[10px] md:text-xs font-sans tracking-[0.3em] uppercase">
           Only for Lin Xi
