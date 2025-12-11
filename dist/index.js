@@ -805,14 +805,14 @@ var UI = ({ currentState, onToggle }) => {
 
 // components/HandController.tsx
 import { useEffect as useEffect2, useRef as useRef4, useState as useState2 } from "react";
-import { HandLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import { GestureRecognizer, FilesetResolver } from "@mediapipe/tasks-vision";
 import { jsx as jsx5, jsxs as jsxs4 } from "react/jsx-runtime";
 var HandController = ({ onGesture, onRotation }) => {
   const videoRef = useRef4(null);
   const [loaded, setLoaded] = useState2(false);
   const [error, setError] = useState2(null);
   useEffect2(() => {
-    let handLandmarker = null;
+    let gestureRecognizer = null;
     let animationFrameId;
     const setupMediaPipe = async () => {
       try {
@@ -823,13 +823,18 @@ var HandController = ({ onGesture, onRotation }) => {
         const vision = await FilesetResolver.forVisionTasks(
           "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
         );
-        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
           baseOptions: {
-            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task`,
             delegate: "GPU"
           },
           runningMode: "VIDEO",
-          numHands: 1
+          numHands: 1,
+          minGestureConfidence: 0.3,
+          // 手势置信度
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5
         });
         setLoaded(true);
         startWebcam();
@@ -861,8 +866,8 @@ var HandController = ({ onGesture, onRotation }) => {
       } catch (err) {
         console.error("Error accessing webcam:", err);
         if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-          setError("\u6444\u50CF\u5934\u6743\u9650\u88AB\u62D2\u7EDD\uFF0C\u8BF7\u5141\u8BB8\u8BBF\u95EE\u6444\u50CF\u5934");
-        } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+          setError("\u6444\u50CF\u5934\u6743\u9650\u88AB\u62D2\u7EDD");
+        } else if (err.name === "NotFoundError") {
           setError("\u672A\u627E\u5230\u6444\u50CF\u5934\u8BBE\u5907");
         } else {
           setError("\u65E0\u6CD5\u8BBF\u95EE\u6444\u50CF\u5934: " + (err.message || err.name));
@@ -870,74 +875,76 @@ var HandController = ({ onGesture, onRotation }) => {
       }
     };
     let lastVideoTime = -1;
-    let lastHandState = null;
+    let lastGestureType = null;
     let lastWristX = null;
-    const stateHistory = [];
-    const stateHistorySize = 5;
+    const gestureHistory = [];
+    const gestureHistorySize = 5;
     const wristXHistory = [];
-    const wristXHistorySize = 3;
+    const wristXHistorySize = 8;
     const predictWebcam = () => {
-      if (videoRef.current && handLandmarker) {
+      if (videoRef.current && gestureRecognizer) {
         if (videoRef.current.currentTime !== lastVideoTime) {
           lastVideoTime = videoRef.current.currentTime;
           const startTimeMs = performance.now();
-          const result = handLandmarker.detectForVideo(videoRef.current, startTimeMs);
-          if (result.landmarks && result.landmarks.length > 0) {
+          const result = gestureRecognizer.recognizeForVideo(videoRef.current, startTimeMs);
+          const hasHand = result.landmarks && result.landmarks.length > 0;
+          if (hasHand && result.gestures && result.gestures.length > 0) {
+            const gestures = result.gestures[0];
             const landmarks = result.landmarks[0];
+            let confirmedGesture = null;
+            if (gestures.length > 0) {
+              const topGesture = gestures[0];
+              const gestureName = topGesture.categoryName;
+              const confidence = topGesture.score;
+              console.log(`\u{1F3AF} \u8BC6\u522B\u5230\u624B\u52BF: ${gestureName} (\u7F6E\u4FE1\u5EA6: ${confidence.toFixed(2)})`);
+              if (confidence > 0.5) {
+                gestureHistory.push(gestureName);
+                if (gestureHistory.length > gestureHistorySize) {
+                  gestureHistory.shift();
+                }
+              }
+              const gestureCount = /* @__PURE__ */ new Map();
+              for (const g of gestureHistory) {
+                gestureCount.set(g, (gestureCount.get(g) || 0) + 1);
+              }
+              let maxCount = 0;
+              for (const [gesture, count] of gestureCount.entries()) {
+                if (count > maxCount && count >= gestureHistorySize * 0.6) {
+                  confirmedGesture = gesture;
+                  maxCount = count;
+                }
+              }
+              if (confirmedGesture && lastGestureType !== confirmedGesture) {
+                console.log(`\u2705 \u786E\u8BA4\u624B\u52BF\u53D8\u5316: ${lastGestureType} \u2192 ${confirmedGesture}`);
+                if (confirmedGesture === "Open_Palm" && lastGestureType === "Closed_Fist") {
+                  onGesture("SCATTERED" /* SCATTERED */);
+                  console.log("\u{1F384} \u6253\u5F00\u5723\u8BDE\u6811");
+                } else if (confirmedGesture === "Closed_Fist" && lastGestureType === "Open_Palm") {
+                  onGesture("TREE_SHAPE" /* TREE_SHAPE */);
+                  console.log("\u{1F384} \u95ED\u5408\u5723\u8BDE\u6811");
+                }
+                lastGestureType = confirmedGesture;
+              }
+            }
             const wrist = landmarks[0];
-            const tips = [8, 12, 16, 20];
-            let extendedFingers = 0;
-            const fingerJoints = [
-              [5, 6, 8],
-              // 食指
-              [9, 10, 12],
-              // 中指
-              [13, 14, 16],
-              // 无名指
-              [17, 18, 20]
-              // 小指
-            ];
-            fingerJoints.forEach(([base, mid, tip]) => {
-              const basePoint = landmarks[base];
-              const midPoint = landmarks[mid];
-              const tipPoint = landmarks[tip];
-              const midDist = Math.sqrt(
-                Math.pow(midPoint.x - wrist.x, 2) + Math.pow(midPoint.y - wrist.y, 2)
-              );
-              const tipDist = Math.sqrt(
-                Math.pow(tipPoint.x - wrist.x, 2) + Math.pow(tipPoint.y - wrist.y, 2)
-              );
-              if (tipDist > midDist * 1.1) {
-                extendedFingers++;
-              }
-            });
-            const currentHandState = extendedFingers <= 1 ? "fist" : "open";
-            stateHistory.push(currentHandState);
-            if (stateHistory.length > stateHistorySize) {
-              stateHistory.shift();
-            }
-            const confirmedState = stateHistory.length >= stateHistorySize && stateHistory.every((s) => s === currentHandState) ? currentHandState : null;
-            if (confirmedState && lastHandState !== confirmedState) {
-              if (confirmedState === "open" && lastHandState === "fist") {
-                onGesture("SCATTERED" /* SCATTERED */);
-              } else if (confirmedState === "fist" && lastHandState === "open") {
-                onGesture("TREE_SHAPE" /* TREE_SHAPE */);
-              }
-              lastHandState = confirmedState;
-            }
-            if (confirmedState === "open") {
-              const currentWristX = wrist.x;
+            const canRotate = confirmedGesture === "Open_Palm" || gestureHistory.length > 0 && gestureHistory.slice(-2).includes("Open_Palm");
+            if (canRotate) {
+              const currentWristX = 1 - wrist.x;
               wristXHistory.push(currentWristX);
               if (wristXHistory.length > wristXHistorySize) {
                 wristXHistory.shift();
               }
-              const smoothedX = wristXHistory.reduce((a, b) => a + b, 0) / wristXHistory.length;
+              const smoothedX = kalmanFilter(wristXHistory);
               if (lastWristX !== null) {
-                const deltaX = (smoothedX - lastWristX) * 50;
-                const rotation = Math.max(-6, Math.min(6, deltaX));
-                onRotation(rotation);
-              } else {
-                onRotation(0);
+                const rawDeltaX = smoothedX - lastWristX;
+                const deadZone = 3e-3;
+                if (Math.abs(rawDeltaX) < deadZone) {
+                  onRotation(0);
+                } else {
+                  const rotation = Math.sign(rawDeltaX) * Math.pow(Math.abs(rawDeltaX) * 60, 0.8);
+                  const clampedRotation = Math.max(-3, Math.min(3, rotation));
+                  onRotation(clampedRotation);
+                }
               }
               lastWristX = smoothedX;
             } else {
@@ -946,8 +953,7 @@ var HandController = ({ onGesture, onRotation }) => {
               onRotation(0);
             }
           } else {
-            lastHandState = null;
-            stateHistory.length = 0;
+            gestureHistory.length = 0;
             wristXHistory.length = 0;
             onRotation(0);
           }
@@ -962,7 +968,7 @@ var HandController = ({ onGesture, onRotation }) => {
         tracks.forEach((track) => track.stop());
       }
       cancelAnimationFrame(animationFrameId);
-      if (handLandmarker) handLandmarker.close();
+      if (gestureRecognizer) gestureRecognizer.close();
     };
   }, [onGesture, onRotation]);
   return /* @__PURE__ */ jsx5("div", { className: "absolute bottom-4 right-4 z-50 pointer-events-auto", children: /* @__PURE__ */ jsxs4("div", { className: `
@@ -983,6 +989,19 @@ var HandController = ({ onGesture, onRotation }) => {
     error && /* @__PURE__ */ jsx5("div", { className: "absolute inset-0 bg-black/80 flex items-center justify-center p-1", children: /* @__PURE__ */ jsx5("div", { className: "text-[6px] text-red-300 text-center leading-tight", children: error }) })
   ] }) });
 };
+function kalmanFilter(values, processNoise = 0.01, measurementNoise = 0.1) {
+  if (values.length === 0) return 0;
+  let estimate = values[0];
+  let error = 1;
+  for (let i = 1; i < values.length; i++) {
+    let priorEstimate = estimate;
+    let priorError = error + processNoise;
+    let kalmanGain = priorError / (priorError + measurementNoise);
+    estimate = priorEstimate + kalmanGain * (values[i] - priorEstimate);
+    error = (1 - kalmanGain) * priorError;
+  }
+  return estimate;
+}
 
 // App.tsx
 import { jsx as jsx6, jsxs as jsxs5 } from "react/jsx-runtime";
