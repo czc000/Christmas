@@ -384,10 +384,10 @@ import { useFrame as useFrame2, useThree } from "@react-three/fiber";
 import { jsx as jsx2 } from "react/jsx-runtime";
 function generatePhotoPositions(count, radius) {
   const positions = [];
-  const SPIRAL_HEIGHT = 18;
-  const SPIRAL_REVS = 2.5;
+  const SPIRAL_HEIGHT = 30;
+  const SPIRAL_REVS = 3;
   const MAX_RADIUS = radius;
-  const MIN_RADIUS = radius * 0.3;
+  const MIN_RADIUS = radius * 0.2;
   for (let i = 0; i < count; i++) {
     const t = i / (count - 1);
     const y = SPIRAL_HEIGHT / 2 - t * SPIRAL_HEIGHT;
@@ -897,7 +897,7 @@ var HandController = ({ onGesture, onRotation }) => {
               const gestureName = topGesture.categoryName;
               const confidence = topGesture.score;
               console.log(`\u{1F3AF} \u8BC6\u522B\u5230\u624B\u52BF: ${gestureName} (\u7F6E\u4FE1\u5EA6: ${confidence.toFixed(2)})`);
-              if (confidence > 0.5) {
+              if (confidence > 0.4) {
                 gestureHistory.push(gestureName);
                 if (gestureHistory.length > gestureHistorySize) {
                   gestureHistory.shift();
@@ -909,21 +909,23 @@ var HandController = ({ onGesture, onRotation }) => {
               }
               let maxCount = 0;
               for (const [gesture, count] of gestureCount.entries()) {
-                if (count > maxCount && count >= gestureHistorySize * 0.6) {
+                if (count > maxCount && count >= Math.max(2, gestureHistorySize * 0.4)) {
                   confirmedGesture = gesture;
                   maxCount = count;
                 }
               }
-              if (confirmedGesture && lastGestureType !== confirmedGesture) {
-                console.log(`\u2705 \u786E\u8BA4\u624B\u52BF\u53D8\u5316: ${lastGestureType} \u2192 ${confirmedGesture}`);
-                if (confirmedGesture === "Open_Palm" && lastGestureType === "Closed_Fist") {
+              const highConfidenceGesture = confidence > 0.7 ? gestureName : null;
+              const finalGesture = highConfidenceGesture || confirmedGesture;
+              if (finalGesture && lastGestureType !== finalGesture) {
+                console.log(`\u2705 \u786E\u8BA4\u624B\u52BF\u53D8\u5316: ${lastGestureType} \u2192 ${finalGesture} (\u7F6E\u4FE1\u5EA6: ${confidence.toFixed(2)})`);
+                if (finalGesture === "Open_Palm" && lastGestureType === "Closed_Fist") {
                   onGesture("SCATTERED" /* SCATTERED */);
                   console.log("\u{1F384} \u6253\u5F00\u5723\u8BDE\u6811");
-                } else if (confirmedGesture === "Closed_Fist" && lastGestureType === "Open_Palm") {
+                } else if (finalGesture === "Closed_Fist" && lastGestureType === "Open_Palm") {
                   onGesture("TREE_SHAPE" /* TREE_SHAPE */);
                   console.log("\u{1F384} \u95ED\u5408\u5723\u8BDE\u6811");
                 }
-                lastGestureType = confirmedGesture;
+                lastGestureType = finalGesture;
               }
             }
             const wrist = landmarks[0];
