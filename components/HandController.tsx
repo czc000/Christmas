@@ -114,8 +114,21 @@ export const HandController: React.FC<HandControllerProps> = ({ onGesture, onRot
             
             if (gestures.length > 0) {
               const topGesture = gestures[0]; // 置信度最高的手势
-              const gestureName = topGesture.categoryName; // "Open_Palm", "Closed_Fist", "Pointing_Up" 等
+              let gestureName = topGesture.categoryName; // "Open_Palm", "Closed_Fist", "Pointing_Up" 等
               const confidence = topGesture.score;
+              
+              // 调试：打印所有识别到的手势
+              if (gestures.length > 1) {
+                console.log('所有手势:', gestures.map(g => `${g.categoryName}(${g.score.toFixed(2)})`).join(', '));
+              }
+              
+              // 手势名称映射：处理可能的变体
+              // GestureRecognizer 可能返回不同的名称
+              if (gestureName === 'Open_Palm' || gestureName === 'Palm' || gestureName === 'Palm_Open') {
+                gestureName = 'Open_Palm';
+              } else if (gestureName === 'Closed_Fist' || gestureName === 'Fist' || gestureName === 'Fist_Closed') {
+                gestureName = 'Closed_Fist';
+              }
               
               console.log(`🎯 识别到手势: ${gestureName} (置信度: ${confidence.toFixed(2)})`);
               
@@ -144,8 +157,15 @@ export const HandController: React.FC<HandControllerProps> = ({ onGesture, onRot
               
               // ✅ 2. 手势触发逻辑
               // 如果当前手势置信度很高，也可以直接触发（不需要等待历史确认）
-              const highConfidenceGesture = confidence > 0.7 ? gestureName : null;
+              const highConfidenceGesture = confidence > 0.6 ? gestureName : null; // 降低阈值到 0.6
               const finalGesture = highConfidenceGesture || confirmedGesture;
+              
+              // 备选方案：如果 Open_Palm 识别不到，检查是否有其他"张开"的手势
+              // 比如 "Thumb_Up", "Victory" 等也可以作为张开的手势
+              const isOpenGesture = finalGesture === 'Open_Palm' || 
+                                   finalGesture === 'Thumb_Up' || 
+                                   finalGesture === 'Victory' ||
+                                   finalGesture === 'ILoveYou';
               
               if (finalGesture && lastGestureType !== finalGesture) {
                 console.log(`✅ 确认手势变化: ${lastGestureType} → ${finalGesture} (置信度: ${confidence.toFixed(2)})`);
@@ -158,15 +178,21 @@ export const HandController: React.FC<HandControllerProps> = ({ onGesture, onRot
                 // - "Victory": V手势
                 // - "ILoveYou": 爱你手势
                 
-                if (finalGesture === 'Open_Palm' && lastGestureType === 'Closed_Fist') {
+                if (isOpenGesture && lastGestureType === 'Closed_Fist') {
                   onGesture(ParticleState.SCATTERED);
                   console.log('🎄 打开圣诞树');
-                } else if (finalGesture === 'Closed_Fist' && lastGestureType === 'Open_Palm') {
+                  lastGestureType = 'Open_Palm'; // 统一标记为 Open_Palm
+                } else if (finalGesture === 'Closed_Fist' && (lastGestureType === 'Open_Palm' || lastGestureType === null)) {
                   onGesture(ParticleState.TREE_SHAPE);
                   console.log('🎄 闭合圣诞树');
+                  lastGestureType = finalGesture;
+                } else if (finalGesture) {
+                  // 更新手势类型，但不触发动作
+                  lastGestureType = isOpenGesture ? 'Open_Palm' : finalGesture;
                 }
-                
-                lastGestureType = finalGesture;
+              } else if (finalGesture) {
+                // 即使手势没变化，也更新 lastGestureType（用于状态保持）
+                lastGestureType = isOpenGesture ? 'Open_Palm' : finalGesture;
               }
             }
             

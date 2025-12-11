@@ -894,8 +894,16 @@ var HandController = ({ onGesture, onRotation }) => {
             let confirmedGesture = null;
             if (gestures.length > 0) {
               const topGesture = gestures[0];
-              const gestureName = topGesture.categoryName;
+              let gestureName = topGesture.categoryName;
               const confidence = topGesture.score;
+              if (gestures.length > 1) {
+                console.log("\u6240\u6709\u624B\u52BF:", gestures.map((g) => `${g.categoryName}(${g.score.toFixed(2)})`).join(", "));
+              }
+              if (gestureName === "Open_Palm" || gestureName === "Palm" || gestureName === "Palm_Open") {
+                gestureName = "Open_Palm";
+              } else if (gestureName === "Closed_Fist" || gestureName === "Fist" || gestureName === "Fist_Closed") {
+                gestureName = "Closed_Fist";
+              }
               console.log(`\u{1F3AF} \u8BC6\u522B\u5230\u624B\u52BF: ${gestureName} (\u7F6E\u4FE1\u5EA6: ${confidence.toFixed(2)})`);
               if (confidence > 0.4) {
                 gestureHistory.push(gestureName);
@@ -914,18 +922,24 @@ var HandController = ({ onGesture, onRotation }) => {
                   maxCount = count;
                 }
               }
-              const highConfidenceGesture = confidence > 0.7 ? gestureName : null;
+              const highConfidenceGesture = confidence > 0.6 ? gestureName : null;
               const finalGesture = highConfidenceGesture || confirmedGesture;
+              const isOpenGesture = finalGesture === "Open_Palm" || finalGesture === "Thumb_Up" || finalGesture === "Victory" || finalGesture === "ILoveYou";
               if (finalGesture && lastGestureType !== finalGesture) {
                 console.log(`\u2705 \u786E\u8BA4\u624B\u52BF\u53D8\u5316: ${lastGestureType} \u2192 ${finalGesture} (\u7F6E\u4FE1\u5EA6: ${confidence.toFixed(2)})`);
-                if (finalGesture === "Open_Palm" && lastGestureType === "Closed_Fist") {
+                if (isOpenGesture && lastGestureType === "Closed_Fist") {
                   onGesture("SCATTERED" /* SCATTERED */);
                   console.log("\u{1F384} \u6253\u5F00\u5723\u8BDE\u6811");
-                } else if (finalGesture === "Closed_Fist" && lastGestureType === "Open_Palm") {
+                  lastGestureType = "Open_Palm";
+                } else if (finalGesture === "Closed_Fist" && (lastGestureType === "Open_Palm" || lastGestureType === null)) {
                   onGesture("TREE_SHAPE" /* TREE_SHAPE */);
                   console.log("\u{1F384} \u95ED\u5408\u5723\u8BDE\u6811");
+                  lastGestureType = finalGesture;
+                } else if (finalGesture) {
+                  lastGestureType = isOpenGesture ? "Open_Palm" : finalGesture;
                 }
-                lastGestureType = finalGesture;
+              } else if (finalGesture) {
+                lastGestureType = isOpenGesture ? "Open_Palm" : finalGesture;
               }
             }
             const wrist = landmarks[0];
